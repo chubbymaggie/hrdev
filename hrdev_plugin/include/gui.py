@@ -1,30 +1,31 @@
 #!c:\\python27\python.exe
 # -*- coding: utf-8 -*-
-# pylint: disable=F0401
-# pylint: disable=E1101
-# pylint: disable=C0103
+# #pylint: disable=F0401
+# #pylint: disable=E1101
+# #pylint: disable=C0103
 
 '''This file contains all classes related to the user interface.'''
 
-
 import re
-from PySide import QtCore, QtGui
-from PySide.QtCore import QRect
-from PySide.QtCore import Qt
-from PySide.QtGui import QFrame
-from PySide.QtGui import QHBoxLayout
-from PySide.QtGui import QPainter
-from PySide.QtGui import QPlainTextEdit
-from PySide.QtGui import QTextFormat
-from PySide.QtGui import QWidget
-from PySide.QtGui import QTextEdit
+
+try:
+    from PySide import QtCore, QtGui
+    from PySide.QtCore import QRect
+    from PySide.QtCore import Qt
+    from PySide.QtGui import *
+except:
+    from PyQt5 import QtCore, QtWidgets
+    from PyQt5.QtCore import QRect
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import *
+    from PyQt5.QtGui import *
 
 import idaapi
-import include.syntax
-import include.helper
+import hrdev_plugin.include.syntax
+import hrdev_plugin.include.helper
 
-idaapi.require('include.syntax')
-idaapi.require('include.helper')
+idaapi.require('hrdev_plugin.include.syntax')
+idaapi.require('hrdev_plugin.include.helper')
 
 
 class LNTextEdit(QFrame):
@@ -34,7 +35,6 @@ class LNTextEdit(QFrame):
         '''Number bar class.'''
 
         def __init__(self, config_theme, edit):
-
             QWidget.__init__(self, edit)
 
             self.config_theme = config_theme
@@ -50,7 +50,7 @@ class LNTextEdit(QFrame):
 
             font_name = self.config_theme.get('number_bar', 'font_name')
             font_size = self.config_theme.getint('number_bar', 'font_size')
-            font = QtGui.QFont(font_name, font_size, QtGui.QFont.Light)
+            font = QFont(font_name, font_size, QFont.Light)
             self.setFont(font)
             return
 
@@ -72,6 +72,7 @@ class LNTextEdit(QFrame):
 
         def _get_y(self, pos):
             '''Get Y coordinate.'''
+
             tmp = self.mapToGlobal(pos)
             return self.edit.viewport().mapFromGlobal(tmp).y()
 
@@ -90,7 +91,7 @@ class LNTextEdit(QFrame):
             color = self.config_theme.get('editor', 'breakpoint_line_color')
 
             selection = QTextEdit.ExtraSelection()
-            selection.format.setBackground(QtGui.QColor(color))
+            selection.format.setBackground(QColor(color))
             selection.format.setProperty(QTextFormat.FullWidthSelection, True)
             selection.cursor = cursor
 
@@ -184,6 +185,7 @@ class LNTextEdit(QFrame):
             self.config_main = self.parent.config_main
             self.config_theme = self.parent.config_theme
             self.tools = self.parent.tools
+            self.lvars = self.parent.lvars
 
             self._loaded = False
 
@@ -198,7 +200,7 @@ class LNTextEdit(QFrame):
             self.cursorPositionChanged.connect(
                 self._on_cursor_position_changed)
 
-            self._bracket_info = include.helper.AttributeDict()
+            self._bracket_info = hrdev_plugin.include.helper.AttributeDict()
             self._bracket_info.saved_bracket = None
             self._bracket_info.depth = 0
             self._bracket_info.seeking_nl = False
@@ -212,6 +214,14 @@ class LNTextEdit(QFrame):
             self._left_selected_bracket = QTextEdit.ExtraSelection()
             self._right_selected_bracket = QTextEdit.ExtraSelection()
 
+            toolTipWidget = QLabel()
+            toolTipWidget.setStyleSheet("QLabel { border-radius: 3px; border: 1px solid #ccc; background-color : #ffffcc; color : #222; padding: 4px; }")
+            toolTipWidget.setFrameShape(QFrame.StyledPanel)
+            toolTipWidget.setWindowFlags(QtCore.Qt.ToolTip)
+            toolTipWidget.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+            toolTipWidget.hide()
+            self._toolTipWidget = toolTipWidget
+
             self._min_marker_len = self.config_main.getint('editor',
                                                            'min_marker_len')
             return
@@ -221,12 +231,12 @@ class LNTextEdit(QFrame):
 
             font_name = self.config_theme.get('editor', 'font_name')
             font_size = self.config_theme.getint('editor', 'font_size')
-            font = QtGui.QFont(font_name, font_size, QtGui.QFont.Light)
+            font = QFont(font_name, font_size, QFont.Light)
             self.setFont(font)
 
             palette = self.palette()
             color = self.config_theme.get('editor', 'font_color')
-            palette.setColor(QtGui.QPalette.Text, QtGui.QColor(color))
+            palette.setColor(QPalette.Text, QColor(color))
             self.setPalette(palette)
             return
 
@@ -240,15 +250,44 @@ class LNTextEdit(QFrame):
             QPlainTextEdit.paintEvent(self, event)
             return
 
+        def _removeTooltip(self):
+            '''Removes ToolTip.'''
+            if self._toolTipWidget:
+                self._toolTipWidget.hide()
+            return
+
+        def event(self, event):
+            '''Handle events.'''
+            if event.type() == QtCore.QEvent.ToolTip:
+                cursor = self.cursorForPosition(event.pos())
+                cursor.select(QTextCursor.WordUnderCursor)
+                name = cursor.selectedText()
+                if name and name in self.lvars:
+                    text = self.lvars[name]
+                    self._toolTipWidget.setText(text)
+                    self._toolTipWidget.move(event.globalPos() + QtCore.QPoint(7, 7))
+                    self._toolTipWidget.adjustSize()
+                    self._toolTipWidget.show()
+                    QtCore.QTimer.singleShot(2000, self._removeTooltip)
+                return True
+            elif event.type() == QtCore.QEvent.Leave:
+                self._toolTipWidget.hide()
+            return super(QPlainTextEdit, self).event(event)
+
         def mouseDoubleClickEvent(self, event):
-            '''TODO: Handle the double mouse click event.'''
+            '''Handle the double mouse click event.'''
+
             cursor = self.cursorForPosition(event.pos())
-            cursor.select(QtGui.QTextCursor.WordUnderCursor)
+            cursor.select(QTextCursor.WordUnderCursor)
             name = cursor.selectedText()
-            if self.config_main.getboolean('editor', 'all_numbers_in_hex'):
-                print 'HRDEV: {}'.format(self.tools.to_number(name))
-            else:
-                print 'HRDEV: {}'.format(self.tools.to_hex(name))
+            # FIXME: detect if is number (or move to context menu?)
+            try:
+                if self.config_main.getboolean('editor', 'all_numbers_in_hex'):
+                    print 'HRDEV: {}'.format(self.tools.to_number(name))
+                else:
+                    print 'HRDEV: {}'.format(self.tools.to_hex(name))
+            except:
+                pass
             return
 
         def _on_cursor_position_changed(self):
@@ -282,7 +321,7 @@ class LNTextEdit(QFrame):
 
             selection = QTextEdit.ExtraSelection()
             color = self.config_theme.get('editor', 'current_line_color')
-            selection.format.setBackground(QtGui.QColor(color))
+            selection.format.setBackground(QColor(color))
             selection.format.setProperty(QTextFormat.FullWidthSelection, True)
             selection.cursor = self.textCursor()
             return selection
@@ -290,28 +329,28 @@ class LNTextEdit(QFrame):
         def _watch_marker(self):
             '''Handler to create text markers.'''
 
-            if not self.textCursor():
+            cursor = self.textCursor()
+            if not cursor:
                 return
 
-            cursor = self.textCursor()
-            cursor.select(QtGui.QTextCursor.WordUnderCursor)
+            cursor.select(QTextCursor.WordUnderCursor)
             word = cursor.selectedText()
             if not word:
                 return
             if len(word) < self._min_marker_len:
                 return
 
-            cursor.movePosition(QtGui.QTextCursor.Start)
+            cursor.movePosition(QTextCursor.Start)
 
-            search_flag = QtGui.QTextDocument.FindFlags(0)
-            search_flag |= QtGui.QTextDocument.FindWholeWords
-            search_flag |= QtGui.QTextDocument.FindCaseSensitively
+            search_flag = QTextDocument.FindFlags(0)
+            search_flag |= QTextDocument.FindWholeWords
+            search_flag |= QTextDocument.FindCaseSensitively
 
             selections = []
             marker_color = self.config_theme.get('editor', 'marker_color')
 
             selection = QTextEdit.ExtraSelection()
-            selection.format.setBackground(QtGui.QColor(marker_color))
+            selection.format.setBackground(QColor(marker_color))
             selection.cursor = cursor
             selections.append(selection)
 
@@ -319,10 +358,13 @@ class LNTextEdit(QFrame):
                 cursor = self.document().find(word, cursor, search_flag)
                 if not cursor:
                     break
+                if cursor.position() == -1:
+                    break
                 selection = QTextEdit.ExtraSelection()
-                selection.format.setBackground(QtGui.QColor(marker_color))
+                selection.format.setBackground(QColor(marker_color))
                 selection.cursor = cursor
                 selections.append(selection)
+
             return selections
 
         def _watch_brackets(self):
@@ -446,20 +488,20 @@ class LNTextEdit(QFrame):
         def _mark_brackets(self, cursor, left_pos, right_pos):
             '''Highlight found brackets.'''
 
-            hl_format = QtGui.QTextCharFormat()
+            hl_format = QTextCharFormat()
             color = self.config_theme.get('editor', 'brackets_color')
 
             cursor.setPosition(left_pos)
-            cursor.movePosition(QtGui.QTextCursor.NextCharacter,
-                                QtGui.QTextCursor.KeepAnchor)
-            hl_format.setForeground(QtGui.QColor(color))
+            cursor.movePosition(QTextCursor.NextCharacter,
+                                QTextCursor.KeepAnchor)
+            hl_format.setForeground(QColor(color))
             self._left_selected_bracket.format = hl_format
             self._left_selected_bracket.cursor = cursor
 
             cursor.setPosition(right_pos - 1)
-            cursor.movePosition(QtGui.QTextCursor.NextCharacter,
-                                QtGui.QTextCursor.KeepAnchor)
-            hl_format.setForeground(QtGui.QColor(color))
+            cursor.movePosition(QTextCursor.NextCharacter,
+                                QTextCursor.KeepAnchor)
+            hl_format.setForeground(QColor(color))
             self._right_selected_bracket.format = hl_format
             self._right_selected_bracket.cursor = cursor
             return
@@ -473,20 +515,20 @@ class LNTextEdit(QFrame):
                 self._casts_marked = False
                 self._casts_selections = None
                 return
-
-            search_flag = QtGui.QTextDocument.FindFlags(0)
-            search_flag |= QtGui.QTextDocument.FindWholeWords
-            search_flag |= QtGui.QTextDocument.FindCaseSensitively
+            search_flag = QTextDocument.FindFlags(0)
+            search_flag |= QTextDocument.FindWholeWords
+            search_flag |= QTextDocument.FindCaseSensitively
             marker_color = self.config_theme.get('editor', 'hidden_color')
 
             self._casts_selections = []
             selection = QTextEdit.ExtraSelection()
 
             cursor = self.document().find(QtCore.QRegExp(r'\(\w+\s\*\)'))
-            cursor.select(QtGui.QTextCursor.WordUnderCursor)
-            cursor.movePosition(QtGui.QTextCursor.Start)
+            cursor.select(QTextCursor.WordUnderCursor)
 
-            selection.format.setBackground(QtGui.QColor(marker_color))
+            cursor.movePosition(QTextCursor.Start)
+
+            selection.format.setBackground(QColor(marker_color))
             selection.cursor = cursor
             self._casts_selections.append(selection)
 
@@ -496,7 +538,7 @@ class LNTextEdit(QFrame):
                 if not cursor:
                     break
                 selection = QTextEdit.ExtraSelection()
-                selection.format.setBackground(QtGui.QColor(marker_color))
+                selection.format.setBackground(QColor(marker_color))
                 selection.cursor = cursor
                 self._casts_selections.append(selection)
             self.setExtraSelections(self._casts_selections)
@@ -517,12 +559,12 @@ class LNTextEdit(QFrame):
             indent_width = self.config_theme.getint('editor', 'indent_width')
 
             # Init painter
-            painter = QtGui.QPainter()
+            painter = QPainter()
             painter.begin(viewport)
 
             # Prepare pen
             indent_color = self.config_theme.get('editor', 'indent_color')
-            pen = QtGui.QPen(indent_color)
+            pen = QPen(QColor(indent_color))
             pen.setStyle(QtCore.Qt.DotLine)
             painter.setPen(pen)
             offset = doc.documentMargin() + self.contentOffset().x()
@@ -561,10 +603,9 @@ class LNTextEdit(QFrame):
             # Start cursor at top line.
             cursor = self.cursorForPosition(QtCore.QPoint(0, 0))
             cursor.movePosition(cursor.StartOfBlock)
-
             while True:
                 # Call the function with a copy of the cursor
-                function(QtGui.QTextCursor(cursor))
+                function(QTextCursor(cursor))
 
                 # Go to the next block (or not if we are done)
                 if self.cursorRect(cursor).bottom() > self.height():
@@ -579,7 +620,7 @@ class LNTextEdit(QFrame):
         def _create_menu(self):
             '''TODO: Create right click context menu.'''
 
-            action = QtGui.QAction("Toggle casts", self)
+            action = QAction("Toggle casts", self)
             action.triggered.connect(self._toggle_casts)
             self.addAction(action)
             return
@@ -589,13 +630,14 @@ class LNTextEdit(QFrame):
             self._loaded = boolean
             return
 
-    def __init__(self, plugin, *args):
 
+    def __init__(self, plugin, *args):
         QFrame.__init__(self, *args)
         self.plugin = plugin
         self.config_main = self.plugin.config_main
         self.config_theme = self.plugin.config_theme
         self.tools = self.plugin.tools
+        self.lvars = self.plugin.lvars
 
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
 
@@ -609,9 +651,9 @@ class LNTextEdit(QFrame):
 
         self.edit.blockCountChanged.connect(self.number_bar.adjust_width)
         self.edit.updateRequest.connect(self.number_bar.update_contents)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+S"), self).\
+        QShortcut(QKeySequence("Ctrl+S"), self).\
             activated.connect(self.save_file)
-        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F"), self).\
+        QShortcut(QKeySequence("Ctrl+F"), self).\
             activated.connect(self.show_find)
         return
 
@@ -658,28 +700,32 @@ class LNTextEdit(QFrame):
 class EditorForm(object):
     '''This ugly class is mostly auto-generated, so I dont touch it.'''
 
-    def __init__(self, config_main, config_theme, tools, *args):
+    def __init__(self, config_main, config_theme, tools, lvars, *args):
         super(EditorForm, self).__init__()
         self.config_main = config_main
         self.config_theme = config_theme
         self.tools = tools
-        return
+        self.lvars = lvars
 
     def setupUi(self, Form):
+
         Form.setObjectName("Form")
         Form.resize(800, 600)
-        self.gridLayout = QtGui.QGridLayout(Form)
+
+        self.gridLayout = QGridLayout(Form)
         self.gridLayout.setContentsMargins(0, 0, 0, 0)
         self.gridLayout.setVerticalSpacing(0)
         self.gridLayout.setObjectName("gridLayout")
         self.plainTextEdit = LNTextEdit(self, Form)
-        sizePolicy = QtGui.QSizePolicy(QtGui.QSizePolicy.Expanding, QtGui.QSizePolicy.Expanding)
+
+        sizePolicy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.plainTextEdit.sizePolicy().hasHeightForWidth())
+
         self.plainTextEdit.setSizePolicy(sizePolicy)
-        self.plainTextEdit.setFrameShape(QtGui.QFrame.NoFrame)
-        self.plainTextEdit.setFrameShadow(QtGui.QFrame.Plain)
+        self.plainTextEdit.setFrameShape(QFrame.NoFrame)
+        self.plainTextEdit.setFrameShadow(QFrame.Plain)
         self.plainTextEdit.setObjectName("plainTextEdit")
         self.gridLayout.addWidget(self.plainTextEdit, 0, 0, 1, 1)
 
@@ -687,13 +733,17 @@ class EditorForm(object):
         QtCore.QMetaObject.connectSlotsByName(Form)
 
     def retranslateUi(self, Form):
-        Form.setWindowTitle(QtGui.QApplication.translate("Form", "Form", None, QtGui.QApplication.UnicodeUTF8))
+        try:
+            Form.setWindowTitle(QApplication.translate("Form", "Form", None, QApplication.UnicodeUTF8))
+        except:
+            Form.setWindowTitle(QApplication.translate("Form", "Form", None))
 
 
-class Find(QtGui.QDialog):
+# https://www.binpress.com/tutorial/building-a-text-editor-with-pyqt-part-3/147
+class Find(QDialog):
     '''Implements find-replace functionality.'''
     def __init__(self, parent=None):
-        QtGui.QDialog.__init__(self, parent)
+        QDialog.__init__(self, parent)
         self.parent = parent
         self.last_start = 0
         self.initUI()
@@ -701,29 +751,29 @@ class Find(QtGui.QDialog):
     def initUI(self):
         '''Initialise interface.'''
 
-        find_button = QtGui.QPushButton("Find", self)
+        find_button = QPushButton("Find", self)
         find_button.clicked.connect(self._find)
 
-        replace_button = QtGui.QPushButton("Replace", self)
+        replace_button = QPushButton("Replace", self)
         replace_button.clicked.connect(self._replace)
 
-        all_button = QtGui.QPushButton("Replace all", self)
+        all_button = QPushButton("Replace all", self)
         all_button.clicked.connect(self._replace_all)
 
-        self.normal_radio = QtGui.QRadioButton("Normal", self)
+        self.normal_radio = QRadioButton("Normal", self)
 
-        regexp_radio = QtGui.QRadioButton("RegEx", self)
+        regexp_radio = QRadioButton("RegEx", self)
 
         # The field into which to type the query
-        self.find_field = QtGui.QTextEdit(self)
+        self.find_field = QTextEdit(self)
         self.find_field.resize(250, 10)
 
         # The field into which to type the text to replace the
         # queried text
-        self.replace_field = QtGui.QTextEdit(self)
+        self.replace_field = QTextEdit(self)
         self.replace_field.resize(250, 10)
 
-        layout = QtGui.QGridLayout()
+        layout = QGridLayout()
 
         layout.addWidget(self.find_field, 1, 0, 1, 4)
         layout.addWidget(self.normal_radio, 2, 2)
@@ -756,7 +806,7 @@ class Find(QtGui.QDialog):
             else:
                 # Make the next search start from the begining again
                 self.last_start = 0
-                self.parent.move_cursor(QtGui.QTextCursor.End)
+                self.parent.move_cursor(QTextCursor.End)
         else:
             pattern = re.compile(query)
             match = pattern.search(text, self.last_start + 1)
@@ -767,7 +817,7 @@ class Find(QtGui.QDialog):
             else:
                 self.last_start = 0
                 # We set the cursor to the end if the search was unsuccessful
-                self.parent.move_cursor(QtGui.QTextCursor.End)
+                self.parent.move_cursor(QTextCursor.End)
 
     def _replace(self):
         '''Replace found text.'''
@@ -795,8 +845,8 @@ class Find(QtGui.QDialog):
         cursor.setPosition(start)
         # Next we move the Cursor by over the match and pass the KeepAnchor parameter
         # which will make the cursor select the the match's text
-        cursor.movePosition(QtGui.QTextCursor.Right,
-                            QtGui.QTextCursor.KeepAnchor,
+        cursor.movePosition(QTextCursor.Right,
+                            QTextCursor.KeepAnchor,
                             end - start)
         self.parent.set_text_cursor(cursor)
         return
@@ -804,12 +854,14 @@ class Find(QtGui.QDialog):
 
 class Canvas(idaapi.PluginForm):
     '''Implements main GUI class.'''
-    def __init__(self, config_main, config_theme, tools, window_name):
+    def __init__(self, config_main, config_theme, tools, lvars, window_name):
         idaapi.PluginForm.__init__(self)
         self.config_main = config_main
         self.config_theme = config_theme
         self.tools = tools
+        self.lvars = lvars
         self.window_name = window_name
+        self.hl = None
 
         self.interface = None
         self.parent = None
@@ -818,21 +870,25 @@ class Canvas(idaapi.PluginForm):
     def OnCreate(self, form):
         '''Called when the plugin form is created.'''
 
-        self.parent = self.FormToPySideWidget(form)
+        try:
+            self.parent = self.FormToPySideWidget(form)
+        except:
+            self.parent = self.FormToPyQtWidget(form)
         self.interface = EditorForm(self.config_main,
                                     self.config_theme,
-                                    self.tools)
+                                    self.tools,
+                                    self.lvars)
 
         self.interface.setupUi(self.parent)
         self.parent.setLayout(self.interface.gridLayout)
 
         text_palette = self.interface.plainTextEdit.palette()
-        color = QtGui.QColor(self.config_theme.get('editor',
+        color = QColor(self.config_theme.get('editor',
                                                    'background_color'))
-        text_palette.setColor(QtGui.QPalette.Active,
-                              QtGui.QPalette.Base, color)
-        text_palette.setColor(QtGui.QPalette.Inactive,
-                              QtGui.QPalette.Base, color)
+        text_palette.setColor(QPalette.Active,
+                              QPalette.Base, color)
+        text_palette.setColor(QPalette.Inactive,
+                              QPalette.Base, color)
         self.interface.plainTextEdit.setPalette(text_palette)
         self.parent.setWindowTitle(self.window_name)
 
@@ -853,7 +909,8 @@ class Canvas(idaapi.PluginForm):
 
     def highlight_document(self, token_kinds):
         '''Switch on document highlighting.'''
-        include.syntax.Highlighter(self.interface.plainTextEdit.document(),
-                                   self.config_theme,
-                                   token_kinds)
+        self.hl = hrdev_plugin.include.syntax.Highlighter(
+            self.interface.plainTextEdit.document(),
+            self.config_theme,
+            token_kinds)
         return

@@ -1,34 +1,46 @@
 #!c:\\python27\python.exe
 # -*- coding: utf-8 -*-
-# pylint: disable=E1101
-# pylint: disable=F0401
-# pylint: disable=C0103
 
 '''This file contains all classes related to parsing and highlighting.'''
 
-from PySide import QtGui, QtCore
+try:
+    from PySide import QtCore, QtGui
+except:
+    from PyQt5 import QtCore, QtGui
+
 import clang.cindex
 import idaapi
-import include.helper
-idaapi.require('include.helper')
+import hrdev_plugin.include.helper
+idaapi.require('hrdev_plugin.include.helper')
 
 
 class Parser(object):
     '''Implements parser to parse Hex-Rays decompiler output.'''
 
-    def __init__(self, plugin):
+    def __init__(self, plugin, lvars):
         super(Parser, self).__init__()
         self.plugin = plugin
+        self.lvars = lvars
         self.config_main = self.plugin.config_main
         self.gui = self.plugin.gui
         self.tools = self.plugin.tools
 
-        self._token_kinds = include.helper.AttributeDict()
+        self._token_kinds = hrdev_plugin.include.helper.AttributeDict()
         self._token_kinds.punctiation = []
         self._token_kinds.kkeyword = []
         self._token_kinds.identifier = []
         self._token_kinds.literal = []
         self._token_kinds.comment = []
+        self._token_kinds.imported_functions = []
+        self._token_kinds.banned_functions = []
+        self._formatting_context = hrdev_plugin.include.helper.AttributeDict()
+        self._formatting_context.opened_brackets = 0
+        self._formatting_context.closed_brackets = 0
+        self._formatting_context.last_indent_num = 0
+        self._formatting_context.newline_started = False
+        self._formatting_context.prev_is_label = False
+        self._formatting_context.prev_is_case = False
+        self._formatting_context.curr_in_case = False
 
         self._replacer_literal = None
 
@@ -66,14 +78,25 @@ class Parser(object):
                 self._token_kinds.kkeyword.append(token.spelling)
 
         elif token.kind == clang.cindex.TokenKind.IDENTIFIER:
-            if token.spelling not in self._token_kinds.identifier:
+
+            if self.config_main.getboolean('editor', 'highlight_imports') \
+               and token.spelling in self.plugin.imports:
+                self._token_kinds.imported_functions.append(token.spelling)
+
+            elif self.config_main.getboolean('editor', 'highlight_banned') \
+               and token.spelling in self.plugin.banned_functions:
+                self._token_kinds.banned_functions.append(token.spelling)
+
+            elif token.spelling not in self._token_kinds.identifier:
                 self._token_kinds.identifier.append(token.spelling)
 
         elif token.kind == clang.cindex.TokenKind.LITERAL:
             self._replacer_literal = token.spelling
             # Replace integers with hex format
             if self.config_main.getboolean('editor', 'all_numbers_in_hex'):
-                self._replacer_literal = self.tools.to_hex(token.spelling)
+                idaapi.msg("{}".format(token.spelling))
+                if self.tools.is_number(token.spelling):
+                    self._replacer_literal = self.tools.to_hex(token.spelling)
             if token.spelling not in self._token_kinds.literal:
                 self._token_kinds.literal.append(self._replacer_literal)
 
@@ -96,18 +119,134 @@ class Parser(object):
             self.gui.add_text(token_spelling)
             return
 
-        if next_token.extent.start.line > token.extent.start.line:
-            diff = next_token.extent.start.line - token.extent.start.line
-            tail = ("\n" * diff) + \
-                   ((next_token.extent.start.column - 1) /
-                    self._tab_width) * self._padding
-        else:
-            diff = next_token.extent.start.column - token.extent.end.column
-            tail = ' ' * diff
-
-        buff = token_spelling + tail
-        self.gui.add_text(buff)
+        self.gui.add_text(self._format_pre(token, next_token) +
+                          token_spelling +
+                          self._format_post(token, next_token))
         return
+
+    def _format_pre(self, token, next_token):
+        '''Add spacing depending before on current keyword.'''
+
+        if token.spelling == ':':
+            return ''
+
+        if token.spelling == '{':
+            self._formatting_context.opened_brackets += 1
+            self._formatting_context.last_indent_num += 1
+            return self._get_tabs() + ''
+
+        if token.spelling == '}':
+            self._formatting_context.closed_brackets += 1
+            if self._formatting_context.closed_brackets == \
+               self._formatting_context.opened_brackets:
+                self._formatting_context.closed_brackets -= 1
+                self._formatting_context.opened_brackets -= 1
+            self._formatting_context.last_indent_num -= 1
+            self._formatting_context.newline_started = True
+            return self._get_tabs() + ''
+
+        if token.spelling[0:5] == 'LABEL' and next_token.spelling == ':':
+            return ''
+
+        return self._get_tabs() + ''
+
+    def _format_post(self, token, next_token):
+        '''Add spacing after depending on current and next keyword.'''
+
+        if token.spelling[0:5] == 'LABEL' and next_token.spelling == ':':
+            self._formatting_context.prev_is_label = True
+            return ''
+
+        if self._formatting_context.prev_is_label:
+            self._formatting_context.prev_is_label = False
+            return '\n'
+
+        if token.spelling == ';' and next_token.spelling == 'case':
+            self._formatting_context.last_indent_num -= 1
+            self._formatting_context.newline_started = True
+            return '\n'
+
+        if token.spelling == 'case' and token.kind == clang.cindex.TokenKind.KEYWORD:
+            self._formatting_context.prev_is_case = True
+            self._formatting_context.curr_in_case = True
+            return ' '
+
+        if token.spelling == ':' and self._formatting_context.prev_is_case:
+            self._formatting_context.last_indent_num += 1
+            self._formatting_context.prev_is_case = False
+            self._formatting_context.newline_started = True
+            return '\n'
+
+        # Handle "case xxx:"
+        if next_token.spelling == ':' and self._formatting_context.prev_is_case:
+            return ''
+
+        # Handle "xxx; // comment"
+        if token.spelling == ';' and next_token.kind == clang.cindex.TokenKind.COMMENT:
+            return ' '
+
+        # Handle " & 0x7fffffff"
+        if token.spelling == '&' and next_token.kind == clang.cindex.TokenKind.LITERAL:
+            return ' '
+
+        if next_token.spelling == '}' and self._formatting_context.curr_in_case:
+            self._formatting_context.curr_in_case = False
+            self._formatting_context.last_indent_num -= 1
+            self._formatting_context.newline_started = True
+            return '\n'
+
+        if token.spelling == '}' and next_token.spelling == 'else':
+            return ' '
+
+        if self._is_newline_spelling(token.spelling) or \
+           token.kind == clang.cindex.TokenKind.COMMENT:
+            self._formatting_context.newline_started = True
+            return '\n'
+
+        # Handle left and right sides no-space tokens
+        if self._is_nospace_token(token.spelling) or \
+           self._is_nospace_token(next_token.spelling):
+            return ''
+
+        # Handle only right-space tokens (a, b, c, ...)
+        if next_token.spelling in [',', ')', ']', ';']:
+            return ''
+
+        # Handle only left-space tokens (,a ,b ,c ,...)
+        if token.spelling in ['(', '&', '*']:
+            return ''
+
+        # Increment/decrement operators
+        if token.spelling in ['--', '++'] and \
+           next_token.kind == clang.cindex.TokenKind.IDENTIFIER:
+            return ''
+        if next_token.spelling in ['--', '++'] and \
+           token.kind == clang.cindex.TokenKind.IDENTIFIER:
+            return ''
+
+        # Function calls
+        if next_token.spelling == '(' and \
+           token.kind == clang.cindex.TokenKind.IDENTIFIER:
+            return ''
+
+        return ' '
+
+    def _get_tabs(self):
+        '''Returns necessary amount of tabs.'''
+        tabs = ''
+        if self._formatting_context.newline_started:
+            tabs = self._padding * \
+                   self._formatting_context.last_indent_num
+            self._formatting_context.newline_started = False
+        return tabs
+
+    def _is_nospace_token(self, token_spelling):
+        tokens = ['.', '->', '[', '!', '::', '~']
+        return token_spelling in tokens
+
+    def _is_newline_spelling(self, token_spelling):
+        newlines = ['{', '}', ';']
+        return token_spelling in newlines
 
     def _get_base_info(self, node):
         '''Get base info.'''
@@ -137,7 +276,6 @@ class Highlighter(QtGui.QSyntaxHighlighter):
     '''Implements C/C++ syntax highligher.'''
     def __init__(self, parent, config_theme, keywords):
         super(Highlighter, self).__init__(parent)
-
         self.config_theme = config_theme
         self.keywords = keywords
         self._highlighting_rules = []
@@ -146,12 +284,31 @@ class Highlighter(QtGui.QSyntaxHighlighter):
 
     def _create_rules(self):
         '''Create highlighting rules.'''
+
         # Identifiers
         identifier_format = QtGui.QTextCharFormat()
         foreground = QtGui.QColor(self.config_theme.get('tokens_highlight',
                                                         'identifier_color'))
         identifier_format.setForeground(foreground)
         for word in self.keywords.identifier:
+            rule = QtCore.QRegExp('\\b{}\\b'.format(word))
+            self._highlighting_rules.append((rule, identifier_format))
+
+        # Special Identifier case for imported functions
+        identifier_format = QtGui.QTextCharFormat()
+        foreground = QtGui.QColor(self.config_theme.get('tokens_highlight',
+                                                        'import_color'))
+        identifier_format.setForeground(foreground)
+        for word in self.keywords.imported_functions:
+            rule = QtCore.QRegExp('\\b{}\\b'.format(word))
+            self._highlighting_rules.append((rule, identifier_format))
+
+        # Special Identifier case for banned functions
+        identifier_format = QtGui.QTextCharFormat()
+        foreground = QtGui.QColor(self.config_theme.get('tokens_highlight',
+                                                        'banned_color'))
+        identifier_format.setForeground(foreground)
+        for word in self.keywords.banned_functions:
             rule = QtCore.QRegExp('\\b{}\\b'.format(word))
             self._highlighting_rules.append((rule, identifier_format))
 
@@ -192,6 +349,7 @@ class Highlighter(QtGui.QSyntaxHighlighter):
 
         self.comment_start_expression = QtCore.QRegExp('/\\*')
         self.comment_end_expression = QtCore.QRegExp('\\*/')
+
         return
 
     def highlightBlock(self, text):
